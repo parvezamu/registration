@@ -624,14 +624,15 @@ class BrainRegistration:
      plt.savefig(save_path, dpi=300, bbox_inches='tight')
      plt.close()
 
-    def create_summary_visualization(self, subject_id, modality_name, metrics, slice_indices, save_path):
+    
+    def create_summary_visualization(self, case_id, modality_name, metrics, slice_indices, save_path):
 
      plt.figure(figsize=(12, 10))
     
     # Plot MSE
      plt.subplot(211)
      plt.plot(slice_indices, metrics['mse'], 'ro-', linewidth=2)
-     plt.title(f'Mean Squared Error - Subject {subject_id} - {modality_name}', fontsize=14)
+     plt.title(f'Mean Squared Error - {case_id} - {modality_name}', fontsize=14)
      plt.xlabel('Slice Index', fontsize=12)
      plt.ylabel('MSE (lower is better)', fontsize=12)
      plt.grid(True, linestyle='--', alpha=0.7)
@@ -639,7 +640,7 @@ class BrainRegistration:
     # Plot SSIM
      plt.subplot(212)
      plt.plot(slice_indices, metrics['ssim'], 'bo-', linewidth=2)
-     plt.title(f'Structural Similarity Index - Subject {subject_id} - {modality_name}', fontsize=14)
+     plt.title(f'Structural Similarity Index - {case_id} - {modality_name}', fontsize=14)
      plt.xlabel('Slice Index', fontsize=12)
      plt.ylabel('SSIM (higher is better)', fontsize=12)
      plt.grid(True, linestyle='--', alpha=0.7)
@@ -650,14 +651,20 @@ class BrainRegistration:
     
     # Add text box with average metrics
      plt.figtext(0.5, 0.01, 
-               f"Average MSE: {avg_mse:.6f}   Average SSIM: {avg_ssim:.4f}",
-               ha='center', fontsize=12,
-               bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray', pad=5))
+              f"Average MSE: {avg_mse:.6f}   Average SSIM: {avg_ssim:.4f}",
+              ha='center', fontsize=12,
+              bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray', pad=5))
     
      plt.tight_layout(rect=[0, 0.03, 1, 0.97])
      plt.savefig(save_path, dpi=300, bbox_inches='tight')
      plt.close()
+    
+    
+    
+  
 
+
+    
     def create_registration_montage(self, template_slices, original_slices, registered_slices, modality_name, save_path, max_slices=16):
 
      n_slices = min(len(template_slices), len(original_slices), len(registered_slices), max_slices)
@@ -670,15 +677,75 @@ class BrainRegistration:
      rows = (n_slices + cols - 1) // cols  # Ceiling division
     
     # Create figure
-     fig = plt.figure(figsize=(cols * 5, rows * 4))
+     fig = plt.figure(figsize=(cols * 5.5, rows * 4.5))
     
-    # Main title
-     fig.suptitle(f"{modality_name} Registration Montage", fontsize=16)
+     # Main title
+     fig.suptitle(f"{modality_name} Registration Montage", fontsize=18, fontweight='bold')
     
-    # Select slices to display (evenly sampled)
-     step = max(1, len(template_slices) // n_slices)
-     slice_indices = list(range(0, len(template_slices), step))[:n_slices]
+    # Enhanced contrast function
+     def enhance_contrast(image):
+        """Apply contrast enhancement to an image"""
+        # Skip if image is empty
+        if np.all(image == 0) or np.max(image) == np.min(image):
+            return np.zeros_like(image)
+        
+        # First, normalize to 0-1 range
+        min_val = np.min(image)
+        max_val = np.max(image)
+        normalized = (image - min_val) / (max_val - min_val + 1e-8)
+        
+        # Apply histogram equalization for better visibility
+        from skimage import exposure
+        
+        try:
+            # Apply CLAHE for better local contrast
+            equalized = exposure.equalize_adapthist(normalized, clip_limit=0.03)
+            
+            # Enhance contrast by stretching histogram
+            p2, p98 = np.percentile(equalized[equalized > 0], (2, 98))
+            enhanced = exposure.rescale_intensity(equalized, in_range=(p2, p98))
+            
+            return enhanced
+        except:
+            # Fallback to simple normalization if enhancement fails
+            return normalized
     
+    # Function to score slice information content
+     def slice_information_score(slice_data):
+        """Calculate how much information a slice contains"""
+        if np.all(slice_data == 0):
+            return 0
+        # Compute standard deviation and mean of non-zero elements as a measure of information
+        mask = slice_data > 0
+        if not np.any(mask):
+            return 0
+        return np.std(slice_data[mask]) * np.mean(slice_data[mask]) * np.sqrt(np.sum(mask))
+    
+    # Score slices and select the most informative ones
+     slice_scores = []
+     for i in range(len(template_slices)):
+        score = slice_information_score(template_slices[i])
+        slice_scores.append(score)
+    
+    # Get indices of most informative slices
+     if len(slice_scores) > n_slices:
+        # Combine top informative slices and evenly distributed slices
+        num_informative = n_slices // 2
+        num_distributed = n_slices - num_informative
+        
+        # Select top informative slices
+        informative_indices = np.argsort(slice_scores)[-num_informative:]
+        
+        # Select evenly distributed slices
+        step = max(1, len(template_slices) // num_distributed)
+        distributed_indices = list(range(0, len(template_slices), step))[:num_distributed]
+        
+        # Combine and deduplicate
+        slice_indices = sorted(list(set(informative_indices) | set(distributed_indices)))[:n_slices]
+     else:
+        slice_indices = list(range(len(template_slices)))
+    
+    # Process each slice
      for i, slice_idx in enumerate(slice_indices):
         if i >= n_slices:
             break
@@ -691,21 +758,49 @@ class BrainRegistration:
         if template_slice.shape != registered_slice.shape:
             template_slice = self.resize_to_match(template_slice, registered_slice.shape)
         
-        # Normalize slices
-        template_norm = self.safe_normalize(template_slice)
-        original_norm = self.safe_normalize(original_slice)
-        registered_norm = self.safe_normalize(registered_slice)
+        # Apply enhanced contrast
+        template_enhanced = enhance_contrast(template_slice)
+        original_enhanced = enhance_contrast(original_slice)
+        registered_enhanced = enhance_contrast(registered_slice)
         
-        # Create RGB overlay
-        overlay = np.zeros((template_norm.shape[0], template_norm.shape[1], 3))
-        overlay[..., 0] = registered_norm  # Red channel = registered
-        overlay[..., 1] = template_norm    # Green channel = template
+        # Create enhanced RGB overlay
+        overlay = np.zeros((template_enhanced.shape[0], template_enhanced.shape[1], 3))
         
-        # Add subplots
-        plt.subplot(rows, cols, i + 1)
+        # Enhance visibility with higher intensity
+        intensity_factor = 2.0  # Boost color intensity for better visibility
+        red_channel = np.clip(registered_enhanced * intensity_factor, 0, 1)  # Red channel = registered
+        green_channel = np.clip(template_enhanced * intensity_factor, 0, 1)  # Green channel = template
+        
+        # Only show color where data exists (avoid coloring black background)
+        red_mask = registered_enhanced > 0.05  # Threshold to avoid showing noise
+        green_mask = template_enhanced > 0.05
+        
+        overlay[..., 0] = red_channel * red_mask
+        overlay[..., 1] = green_channel * green_mask
+        
+        # Compute metrics for this slice
+        try:
+            mse = np.mean((template_enhanced - registered_enhanced) ** 2)
+            ssim_val = skimage_ssim(template_enhanced, registered_enhanced, data_range=1.0)
+            metrics_text = f"MSE: {mse:.4f}\nSSIM: {ssim_val:.4f}"
+        except:
+            metrics_text = "Metrics N/A"
+        
+        # Add subplots with enhanced visualization
+        ax = plt.subplot(rows, cols, i + 1)
         plt.imshow(overlay)
-        plt.title(f"Slice {slice_idx}")
+        plt.title(f"Slice {slice_idx}", fontsize=12)
         plt.axis('off')
+        
+        # Add metrics text with better visibility
+        ax.text(10, 25, metrics_text, color='white',
+                bbox=dict(facecolor='black', alpha=0.7, boxstyle='round'),
+                fontsize=10, fontweight='bold')
+    
+    # Add a legend for color interpretation
+     legend_text = "Color Key: Green = Template, Red = Registered, Yellow = Perfect Match"
+     plt.figtext(0.5, 0.01, legend_text, ha='center', fontsize=12,
+               bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray', pad=5))
     
      plt.tight_layout(rect=[0, 0, 1, 0.95])
      plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -891,7 +986,9 @@ class BrainRegistration:
     
      return metrics
     
-    def add_metrics_visualization_to_patient_processing(self, patient_idx, patient_output_dir, template_data, Data_CBF, Data_Tmax, Data_CBV, Data_MTT, registered_modalities):
+    
+    
+    def add_metrics_visualization_to_patient_processing(self, case_id, patient_output_dir, template_data, Data_CBF, Data_Tmax, Data_CBV, Data_MTT, registered_modalities):
 
      self.log("Creating directories for visualizations...")
      subject_viz_dir = os.path.join(patient_output_dir, 'visualizations')
@@ -909,7 +1006,7 @@ class BrainRegistration:
     # Process metrics and visualizations for each modality
      self.log("Generating metrics and visualizations...")
      with open(metrics_output_path, 'w') as metrics_file:
-        metrics_file.write(f"Patient {patient_idx+1} - Registration Metrics\n")
+        metrics_file.write(f"Patient {case_id} - Registration Metrics\n")
         metrics_file.write("="*50 + "\n\n")
         
         all_modality_metrics = {}
@@ -960,7 +1057,6 @@ class BrainRegistration:
                 registered_slices.append(registered_slice)
                 
                 # Calculate metrics for this slice
-
                 slice_mse, slice_ssim = self.calculate_slice_metrics(template_slice, registered_slice)
                 all_mse.append(slice_mse)
                 all_ssim.append(slice_ssim)
@@ -971,19 +1067,19 @@ class BrainRegistration:
                     "ssim": slice_ssim
                 }
                 
-                # Save visualization for this slice
-                png_path = os.path.join(slice_viz_dir, f'{modality_name}_slice_{slice_idx:03d}.png')
+                # Save visualization for this slice - include case_id in filename
+                png_path = os.path.join(slice_viz_dir, f'{modality_name}_{case_id}_slice_{slice_idx:03d}.png')
                 self.save_comparison_image(
                     template_slice,
                     registered_slice, 
                     original_slice,
                     slice_metrics,
                     png_path,
-                    modality_name
+                    f"{modality_name} ({case_id})"  # Include case_id in title
                 )
                 
-                # Create difference map
-                diff_map_path = os.path.join(difference_maps_dir, f'{modality_name}_diff_map_slice_{slice_idx:03d}.png')
+                # Create difference map with case_id
+                diff_map_path = os.path.join(difference_maps_dir, f'{modality_name}_{case_id}_diff_map_slice_{slice_idx:03d}.png')
                 self.create_difference_map(original_slice, registered_slice, diff_map_path)
                 
                 # Print progress indicator
@@ -997,9 +1093,9 @@ class BrainRegistration:
             }
             all_modality_metrics[modality_name] = modality_metrics
             
-            # Create summary visualization
-            summary_path = os.path.join(summary_dir, f'{modality_name}_metrics_summary.png')
-            self.create_summary_visualization(patient_idx, modality_name, modality_metrics, slice_indices, summary_path)
+            # Create summary visualization with case_id
+            summary_path = os.path.join(summary_dir, f'{modality_name}_{case_id}_metrics_summary.png')
+            self.create_summary_visualization(case_id, modality_name, modality_metrics, slice_indices, summary_path)
             
             # Calculate average metrics across all slices
             if len(all_mse) > 0:
@@ -1016,23 +1112,29 @@ class BrainRegistration:
                 metrics_file.write(f"Per-slice SSIM range: {min(all_ssim):.4f} - {max(all_ssim):.4f}\n")
             metrics_file.write(f"Number of valid slices: {len(all_mse)}\n")
             
-            # Create montage for overview
-            montage_path = os.path.join(summary_dir, f'{modality_name}_montage.png')
-            self.create_registration_montage(template_slices, original_slices, registered_slices, modality_name, montage_path)
+            # Create montage for overview with case_id
+            montage_path = os.path.join(summary_dir, f'{modality_name}_{case_id}_montage.png')
+            self.create_registration_montage(
+                template_slices, 
+                original_slices, 
+                registered_slices, 
+                f"{modality_name} ({case_id})",  # Include case_id in title
+                montage_path
+            )
             
-            # Create alignment summary
-            alignment_summary_path = os.path.join(summary_dir, f'{modality_name}_alignment_summary.png')
+            # Create alignment summary with case_id
+            alignment_summary_path = os.path.join(summary_dir, f'{modality_name}_{case_id}_alignment_summary.png')
             self.create_alignment_summary(
                 template_data,
                 original_modality_data,
                 registered_modality,
-                modality_name,
+                f"{modality_name} ({case_id})",  # Include case_id in title
                 alignment_summary_path
             )
         
-        # Create combined metrics visualization
+        # Create combined metrics visualization with case_id
         if len(all_modality_metrics) > 0:
-            combined_metrics_path = os.path.join(summary_dir, f'all_modalities_comparison.png')
+            combined_metrics_path = os.path.join(summary_dir, f'all_modalities_{case_id}_comparison.png')
             
             plt.figure(figsize=(15, 10))
             
@@ -1041,7 +1143,7 @@ class BrainRegistration:
             for modality in all_modality_metrics:
                 if len(all_modality_metrics[modality]['mse']) > 0:
                     plt.plot(all_modality_metrics[modality]['mse'], label=modality)
-            plt.title(f'MSE Comparison Across Modalities - Patient {patient_idx+1}', fontsize=14)
+            plt.title(f'MSE Comparison Across Modalities - {case_id}', fontsize=14)
             plt.xlabel('Slice Index')
             plt.ylabel('MSE (lower is better)')
             plt.legend()
@@ -1052,7 +1154,7 @@ class BrainRegistration:
             for modality in all_modality_metrics:
                 if len(all_modality_metrics[modality]['ssim']) > 0:
                     plt.plot(all_modality_metrics[modality]['ssim'], label=modality)
-            plt.title(f'SSIM Comparison Across Modalities - Patient {patient_idx+1}', fontsize=14)
+            plt.title(f'SSIM Comparison Across Modalities - {case_id}', fontsize=14)
             plt.xlabel('Slice Index')
             plt.ylabel('SSIM (higher is better)')
             plt.legend()
@@ -1061,10 +1163,9 @@ class BrainRegistration:
             plt.tight_layout()
             plt.savefig(combined_metrics_path, dpi=300, bbox_inches='tight')
             plt.close()
-        
-     self.log(f"Saved metrics and visualizations for patient {patient_idx+1}")
-
     
+     self.log(f"Saved metrics and visualizations for patient {case_id}")
+
     
     
     
@@ -1479,188 +1580,224 @@ class BrainRegistration:
         
         return ensemble_predict
         
+    
     def preprocess_and_register_patients(self, dataset_path, template_path, output_dir, weights_dir=None, use_ensemble=True):
-        """
-        Preprocess and register 5 patients
+
+     os.makedirs(output_dir, exist_ok=True)
+    
+    # Get list of patient directories
+     patient_dirs = sorted([d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))])
+     self.log(f"Processing {len(patient_dirs)} patients from {dataset_path}")
+    
+    # Load template
+     self.log(f"Loading template from {template_path}")
+     template_nii = nib.load(template_path)
+     template_data = template_nii.get_fdata().astype('float32')
+     if template_data.ndim == 3:
+        template_data = template_data.transpose(2, 0, 1)
+    
+    # Initialize model if not already created
+     if self.model is None:
+        self.log("Creating registration model...")
+        self.create_registration_model(
+            fixed_input_shape=(64, 64, 1),
+            moving_input_shape=(64, 64, 4),
+            n_base_filters=8,
+            depth=4,
+            dropout_rate=0.4
+        )
+    
+    # Load weights
+     if weights_dir is None:
+        weights_dir = '.'  # Use current directory if not specified
+    
+    # Check for ensemble weights - more flexible pattern matching
+     ensemble_predictor = None
+     if use_ensemble:
+        # Find any .h5 files in the weights directory
+        weight_files = glob.glob(os.path.join(weights_dir, '*.h5'))
         
-        Args:
-            dataset_path: Path to dataset directory
-            template_path: Path to template image
-            output_dir: Path to save results
-            weights_dir: Directory containing model weights
-            use_ensemble: Whether to use ensemble model
-        """
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Get list of patient directories
-        patient_dirs = sorted([d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))])[:5]
-        self.log(f"Processing {len(patient_dirs)} patients from {dataset_path}")
-        
-        # Load template
-        self.log(f"Loading template from {template_path}")
-        template_nii = nib.load(template_path)
-        template_data = template_nii.get_fdata().astype('float32')
-        if template_data.ndim == 3:
-            template_data = template_data.transpose(2, 0, 1)
-        
-        # Initialize model if not already created
-        if self.model is None:
-            self.log("Creating registration model...")
-            self.create_registration_model(
-                fixed_input_shape=(64, 64, 1),
-                moving_input_shape=(64, 64, 4),
-                n_base_filters=8,
-                depth=4,
-                dropout_rate=0.4
-            )
-        
-        # Load weights
-        if weights_dir is None:
-            weights_dir = '.'  # Use current directory if not specified
-        
-        # Check for ensemble weights - more flexible pattern matching
-        ensemble_predictor = None
-        if use_ensemble:
-            # Find any .h5 files in the weights directory
-            weight_files = glob.glob(os.path.join(weights_dir, '*.h5'))
+        if len(weight_files) >= 5:
+            self.log(f"Found {len(weight_files)} weight files for ensemble at {weights_dir}")
+            ensemble_predictor = self.create_ensemble_model(weights_dir)
+        else:
+            self.log(f"Not enough ensemble weights found in {weights_dir} (found {len(weight_files)}, need 5), using single model")
+            use_ensemble = False
             
-            if len(weight_files) >= 5:
-                self.log(f"Found {len(weight_files)} weight files for ensemble at {weights_dir}")
-                ensemble_predictor = self.create_ensemble_model(weights_dir)
+            # Try to load a single model weight if available
+            if weight_files:
+                self.log(f"Loading single model weights from {weight_files[0]}")
+                self.model.load_weights(weight_files[0])
             else:
-                self.log(f"Not enough ensemble weights found in {weights_dir} (found {len(weight_files)}, need 5), using single model")
-                use_ensemble = False
-                
-                # Try to load a single model weight if available
-                if weight_files:
-                    self.log(f"Loading single model weights from {weight_files[0]}")
-                    self.model.load_weights(weight_files[0])
-                else:
-                    self.log("No model weights found, using randomly initialized model")
+                self.log("No model weights found, using randomly initialized model")
+    
+    # Create a mapping to store original case IDs with their indices
+     case_id_map = {}
+    
+    # Process each patient
+     for patient_idx, patient_dir in enumerate(patient_dirs):
+        # Extract the original case ID from the directory name
+        # Assuming directory names follow pattern like "case_16", "case_25", etc.
+        original_case_id = patient_dir
         
-        # Process each patient
-        for patient_idx, patient_dir in enumerate(patient_dirs):
-            patient_path = os.path.join(dataset_path, patient_dir)
-            patient_output_dir = os.path.join(output_dir, f"patient_{patient_idx+1}")
-            os.makedirs(patient_output_dir, exist_ok=True)
-            
-            self.log(f"\nProcessing patient {patient_idx+1}: {patient_dir}")
-            
-            # Find and load files for this patient
-            try:
-                # Find CT and perfusion files
-                ct_file = glob.glob(os.path.join(patient_path, '*CT*.nii'))[0]
-                cbf_file = glob.glob(os.path.join(patient_path, '*CT_CBF*.nii'))[0]
-                cbv_file = glob.glob(os.path.join(patient_path, '*CT_CBV*.nii'))[0]
-                mtt_file = glob.glob(os.path.join(patient_path, '*CT_MTT*.nii'))[0]
-                tmax_file = glob.glob(os.path.join(patient_path, '*CT_Tmax*.nii'))[0]
-                
-                self.log(f"Loading CT data from {ct_file}")
-                x = nib.load(ct_file)
-                Data_CT = x.get_fdata().astype('float32').transpose(2, 0, 1)
-                
-                # Load and preprocess other modalities
-                self.log("Loading and preprocessing other modalities...")
-                Data_CBF = nib.load(cbf_file).get_fdata().astype('float32').transpose(2, 0, 1)
-                Data_Tmax = nib.load(tmax_file).get_fdata().astype('float32').transpose(2, 0, 1)
-                Data_CBV = nib.load(cbv_file).get_fdata().astype('float32').transpose(2, 0, 1)
-                Data_MTT = nib.load(mtt_file).get_fdata().astype('float32').transpose(2, 0, 1)
-                
-                # Preprocessing CT data
-                temp = Data_Tmax + Data_CBV + Data_MTT + Data_CBF
-                temp1 = (temp > 0) * 1.0
-                rot = self.rotation_finding(Data_CT)
-                region_prop = self.skull_stripping(temp1, rot)
-                
-                Temp_CT = self.cropping_data(Data_CT, region_prop, normli=False, rot=False)
-                Temp_CT = self.data_normalization(Temp_CT)
-                
-                Temp_CBF = self.cropping_data(Data_CBF, region_prop, normli=False, rot=False)
-                Temp_CBF = self.data_normalization(Temp_CBF)
-                
-                Temp_Tmax = self.cropping_data(Data_Tmax, region_prop, normli=False, rot=False)
-                Temp_Tmax = self.data_normalization(Temp_Tmax)
-                
-                Temp_CBV = self.cropping_data(Data_CBV, region_prop, normli=False, rot=False)
-                Temp_CBV = self.data_normalization(Temp_CBV)
-                
-                Temp_MTT = self.cropping_data(Data_MTT, region_prop, normli=False, rot=False)
-                Temp_MTT = self.data_normalization(Temp_MTT)
-                
-                # Process template with resizing
-                from skimage.transform import resize
-                
-                # Resize template to match CT dimensions
-                processed_template = []
-                for i in range(len(Temp_CT)):
-                    template_slice = template_data[i % template_data.shape[0]]
-                    if template_slice.shape != Temp_CT[i].shape:
-                        template_slice = resize(template_slice, Temp_CT[i].shape, order=1, mode='constant', anti_aliasing=True)
-                    processed_template.append(template_slice)
-                
-                Temp_Template = processed_template
-                
-                # Generate patches
-                self.log("Generating forward patches...")
-                forward_patches, forward_moving_patches, forward_indices = self.patch_generation_forward(
-                    Temp_Template, Temp_CBF, Temp_Tmax, Temp_CBV, Temp_MTT)
-                
-                self.log("Generating symmetric patches...")
-                symmetric_patches, symmetric_moving_patches, symmetric_indices = self.patch_generation_sym(
-                    Temp_Template, Temp_CBF, Temp_Tmax, Temp_CBV, Temp_MTT)
-                
-                # Perform registration prediction
-                if use_ensemble and ensemble_predictor is not None:
-                    self.log("Performing ensemble registration prediction...")
-                    predicted_patches_forward = ensemble_predictor([forward_patches, forward_moving_patches])
-                    predicted_patches_symmetric = ensemble_predictor([symmetric_patches, symmetric_moving_patches])
-                else:
-                    self.log("Performing single model registration prediction...")
-                    predicted_patches_forward = self.model.predict([forward_patches, forward_moving_patches], batch_size=1)
-                    predicted_patches_symmetric = self.model.predict([symmetric_patches, symmetric_moving_patches], batch_size=1)
-                
-                # Extract deformation field from predictions
-                deformable_field_patches = predicted_patches_symmetric[:, :, :, -2:]
-                self.log("Reconstructing deformable field...")
-                full_deformable_field = self.reconstruct_deformable_field(deformable_field_patches, symmetric_indices, Data_CT.shape)
-                
-                # Save deformation field
-                deformable_img = nib.Nifti1Image(full_deformable_field, x.affine, x.header)
-                deformable_output_path = os.path.join(patient_output_dir, 'deformation_field.nii.gz')
-                nib.save(deformable_img, deformable_output_path)
-                self.log(f"Saved deformation field at {deformable_output_path}")
-                # Apply deformation to each modality
-                self.log("Applying deformation field to all modalities...")
-                registered_modalities = {}
-
-                for modality_name, modality_data in [('CBF', Data_CBF), ('Tmax', Data_Tmax), ('CBV', Data_CBV), ('MTT', Data_MTT)]:
-                  registered_modality = self.apply_deformation_field(modality_data, full_deformable_field)
-                  registered_modalities[modality_name] = registered_modality
-                  reg_img = nib.Nifti1Image(registered_modality, x.affine, x.header)
-                  reg_output_path = os.path.join(patient_output_dir, f'registered_{modality_name}.nii.gz')
-                  nib.save(reg_img, reg_output_path)
-                  self.log(f"Saved registered {modality_name} at {reg_output_path}")
-
-
-                self.add_metrics_visualization_to_patient_processing(
-                 patient_idx,
-                 patient_output_dir,
-                 template_data,
-                 Data_CBF, Data_Tmax, Data_CBV, Data_MTT,
-                 registered_modalities)
-
-            
-            except Exception as e:
-                self.log(f"Error processing patient {patient_dir}: {str(e)}")
-                import traceback
-                traceback.print_exc()
+        # Store the mapping
+        case_id_map[patient_idx] = original_case_id
         
-        # Save log
-        log_path = os.path.join(output_dir, 'registration_log.txt')
-        self.save_log(log_path)
-        self.log(f"Registration completed for all patients. Log saved to {log_path}")
+        patient_path = os.path.join(dataset_path, patient_dir)
         
-        return True
+        # Use the original case ID in the output directory name
+        patient_output_dir = os.path.join(output_dir, f"{original_case_id}")
+        os.makedirs(patient_output_dir, exist_ok=True)
+        
+        self.log(f"\nProcessing patient {patient_idx+1}: {original_case_id}")
+        
+        # Find and load files for this patient
+        try:
+            # Find CT and perfusion files
+            ct_file = glob.glob(os.path.join(patient_path, '*CT*.nii'))[0]
+            cbf_file = glob.glob(os.path.join(patient_path, '*CT_CBF*.nii'))[0]
+            cbv_file = glob.glob(os.path.join(patient_path, '*CT_CBV*.nii'))[0]
+            mtt_file = glob.glob(os.path.join(patient_path, '*CT_MTT*.nii'))[0]
+            tmax_file = glob.glob(os.path.join(patient_path, '*CT_Tmax*.nii'))[0]
+            
+            self.log(f"Loading CT data from {ct_file}")
+            x = nib.load(ct_file)
+            Data_CT = x.get_fdata().astype('float32').transpose(2, 0, 1)
+            
+            # Load and preprocess other modalities
+            self.log("Loading and preprocessing other modalities...")
+            Data_CBF = nib.load(cbf_file).get_fdata().astype('float32').transpose(2, 0, 1)
+            Data_Tmax = nib.load(tmax_file).get_fdata().astype('float32').transpose(2, 0, 1)
+            Data_CBV = nib.load(cbv_file).get_fdata().astype('float32').transpose(2, 0, 1)
+            Data_MTT = nib.load(mtt_file).get_fdata().astype('float32').transpose(2, 0, 1)
+            
+            # Preprocessing CT data
+            temp = Data_Tmax + Data_CBV + Data_MTT + Data_CBF
+            temp1 = (temp > 0) * 1.0
+            rot = self.rotation_finding(Data_CT)
+            region_prop = self.skull_stripping(temp1, rot)
+            
+            Temp_CT = self.cropping_data(Data_CT, region_prop, normli=False, rot=False)
+            Temp_CT = self.data_normalization(Temp_CT)
+            
+            Temp_CBF = self.cropping_data(Data_CBF, region_prop, normli=False, rot=False)
+            Temp_CBF = self.data_normalization(Temp_CBF)
+            
+            Temp_Tmax = self.cropping_data(Data_Tmax, region_prop, normli=False, rot=False)
+            Temp_Tmax = self.data_normalization(Temp_Tmax)
+            
+            Temp_CBV = self.cropping_data(Data_CBV, region_prop, normli=False, rot=False)
+            Temp_CBV = self.data_normalization(Temp_CBV)
+            
+            Temp_MTT = self.cropping_data(Data_MTT, region_prop, normli=False, rot=False)
+            Temp_MTT = self.data_normalization(Temp_MTT)
+            
+            # Process template with resizing
+            from skimage.transform import resize
+            
+            # Resize template to match CT dimensions
+            processed_template = []
+            for i in range(len(Temp_CT)):
+                template_slice = template_data[i % template_data.shape[0]]
+                if template_slice.shape != Temp_CT[i].shape:
+                    template_slice = resize(template_slice, Temp_CT[i].shape, order=1, mode='constant', anti_aliasing=True)
+                processed_template.append(template_slice)
+            
+            Temp_Template = processed_template
+            
+            # Generate patches
+            self.log("Generating forward patches...")
+            forward_patches, forward_moving_patches, forward_indices = self.patch_generation_forward(
+                Temp_Template, Temp_CBF, Temp_Tmax, Temp_CBV, Temp_MTT)
+            
+            self.log("Generating symmetric patches...")
+            symmetric_patches, symmetric_moving_patches, symmetric_indices = self.patch_generation_sym(
+                Temp_Template, Temp_CBF, Temp_Tmax, Temp_CBV, Temp_MTT)
+            
+            # Perform registration prediction
+            if use_ensemble and ensemble_predictor is not None:
+                self.log("Performing ensemble registration prediction...")
+                predicted_patches_forward = ensemble_predictor([forward_patches, forward_moving_patches])
+                predicted_patches_symmetric = ensemble_predictor([symmetric_patches, symmetric_moving_patches])
+            else:
+                self.log("Performing single model registration prediction...")
+                predicted_patches_forward = self.model.predict([forward_patches, forward_moving_patches], batch_size=1)
+                predicted_patches_symmetric = self.model.predict([symmetric_patches, symmetric_moving_patches], batch_size=1)
+            
+            # Extract deformation field from predictions
+            deformable_field_patches = predicted_patches_symmetric[:, :, :, -2:]
+            self.log("Reconstructing deformable field...")
+            full_deformable_field = self.reconstruct_deformable_field(deformable_field_patches, symmetric_indices, Data_CT.shape)
+            
+            # Save deformation field with original case ID in filename
+            deformable_img = nib.Nifti1Image(full_deformable_field, x.affine, x.header)
+            deformable_output_path = os.path.join(patient_output_dir, f'Deformable_field_{original_case_id}.nii.gz')
+            nib.save(deformable_img, deformable_output_path)
+            self.log(f"Saved deformation field at {deformable_output_path}")
+            
+            # Apply deformation to each modality
+            self.log("Applying deformation field to all modalities...")
+            registered_modalities = {}
+
+            for modality_name, modality_data in [('CBF', Data_CBF), ('Tmax', Data_Tmax), ('CBV', Data_CBV), ('MTT', Data_MTT)]:
+                registered_modality = self.apply_deformation_field(modality_data, full_deformable_field)
+                registered_modalities[modality_name] = registered_modality
+                reg_img = nib.Nifti1Image(registered_modality, x.affine, x.header)
+                # Use original case ID in the output filename
+                reg_output_path = os.path.join(patient_output_dir, f'Template_Registered_{modality_name}_{original_case_id}.nii.gz')
+                nib.save(reg_img, reg_output_path)
+                self.log(f"Saved registered {modality_name} at {reg_output_path}")
+
+            # Create visualization directory with original case ID
+            viz_patient_output_dir = os.path.join(output_dir, f"{original_case_id}_visualizations")
+            if os.path.exists(viz_patient_output_dir):
+                import shutil
+                shutil.rmtree(viz_patient_output_dir)
+            os.makedirs(viz_patient_output_dir, exist_ok=True)
+            
+            # Add metrics with original case ID
+            self.add_metrics_visualization_to_patient_processing(
+                original_case_id,  # Pass original case ID instead of index
+                patient_output_dir,
+                template_data,
+                Data_CBF, Data_Tmax, Data_CBV, Data_MTT,
+                registered_modalities
+            )
+            
+            # Create metrics file with original case ID
+            metrics_file_path = os.path.join(output_dir, f'Final_Metrics_{original_case_id}.txt')
+            with open(metrics_file_path, 'w') as f:
+                f.write(f"Registration Metrics for {original_case_id}\n")
+                f.write("="*50 + "\n\n")
+                
+                # Copy contents from patient metrics file if it exists
+                patient_metrics_file = os.path.join(patient_output_dir, 'registration_metrics.txt')
+                if os.path.exists(patient_metrics_file):
+                    with open(patient_metrics_file, 'r') as pmf:
+                        f.write(pmf.read())
+        
+        except Exception as e:
+            self.log(f"Error processing patient {original_case_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    # Save log with patient ID mapping
+     log_path = os.path.join(output_dir, 'registration_log.txt')
+     self.save_log(log_path)
+     self.log("Patient ID mapping:")
+     for idx, case_id in case_id_map.items():
+        self.log(f"  Patient {idx+1}: {case_id}")
+     self.log(f"Registration completed for all patients. Log saved to {log_path}")
+    
+    # Save case ID mapping as JSON for later reference
+     mapping_path = os.path.join(output_dir, 'case_id_mapping.json')
+     with open(mapping_path, 'w') as f:
+        json.dump(case_id_map, f, indent=2)
+     self.log(f"Case ID mapping saved to {mapping_path}")
+    
+     return True
+    
+ 
 
 # Add command-line interface
 if __name__ == "__main__":
