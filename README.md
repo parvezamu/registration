@@ -76,16 +76,16 @@ Each patient folder must include:
 Model Architecture
 
 1. Encoder  
-- 4-level feature extractor with residual + dropout
-- Instance normalization and ReLU activation
+   - 4-level feature extractor with residual + dropout  
+   - Instance normalization and ReLU activation
 
 2. Channel Attention  
-- Dual-branch attention with sigmoid gating
-- Emphasizes informative features
+   - Dual-branch attention with sigmoid gating  
+   - Emphasizes informative features
 
 3. Multi-Branch Deformation Estimation  
-- Five parallel branches: Main, CBF, CBV, Tmax, MTT  
-- Weighted combination to yield smooth deformation field
+   - Five parallel branches: Main, CBF, CBV, Tmax, MTT  
+   - Weighted combination to yield smooth deformation field
 
 Loss Functions
 
@@ -115,11 +115,26 @@ Evaluation Summary
 - Highest SSIM in CBV and CBF
 - Robust generalization via 5-fold ensemble
 
-Key Takeaways
+Visualization
 
-- Channel attention improves anatomical alignment.
-- Multi-branch design allows modality-aware registration.
-- Modular design supports other imaging contexts.
+Example outputs are provided in `sample_cases/`:
+```
+sample_cases/
+├── case_16/
+│   └── visualizations/summary/
+│       ├── CBF_case_16_alignment_summary.png
+│       ├── CBV_case_16_montage.png
+│       └── ...
+└── case_3/
+    └── visualizations/summary/
+        ├── MTT_case_3_metrics_summary.png
+        ├── all_modalities_case_3_comparison.png
+        └── ...
+```
+These include:
+- Montage Views of aligned modalities
+- Registration Metrics (SSIM, MSE) visual summaries
+- Overlay Comparisons with template
 
 References
 
